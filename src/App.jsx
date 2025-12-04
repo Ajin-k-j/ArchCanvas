@@ -27,7 +27,9 @@ import {
   Upload,
   FileJson,
   FileText,
-  Type
+  Type,
+  Share2,
+  CheckCircle2
 } from 'lucide-react';
 
 /**
@@ -53,12 +55,9 @@ const getGlobalPosition = (nodeId, nodes) => {
     const parent = nodes.find((n) => n.id === currentParentId);
     if (!parent) break;
     
-    // Add Parent's position
     x += parent.x;
     y += parent.y;
 
-    // FIX: Add offset for Container Header and Padding
-    // Children are rendered inside a relative div that is pushed down by the header
     if (parent.type === 'container') {
        x += CONTAINER_PADDING;
        y += CONTAINER_HEADER_HEIGHT + CONTAINER_PADDING; 
@@ -90,7 +89,6 @@ const getDescendants = (nodeId, nodes) => {
   return descendants;
 };
 
-// Calculate the best anchor point on the border of a node relative to another point
 const getAnchorPoint = (sourceRect, targetCenter) => {
   const sourceCenter = {
     x: sourceRect.x + sourceRect.width / 2,
@@ -225,7 +223,6 @@ const performLayoutForScope = (nodesInScope, allEdges) => {
   return { positions: newPositions, width: maxX, height: maxY };
 };
 
-// Expand parents recursively if child grows
 const expandParents = (nodes, changedNodeId) => {
   let updatedNodes = [...nodes];
   let currentId = changedNodeId;
@@ -239,10 +236,7 @@ const expandParents = (nodes, changedNodeId) => {
      
      const parent = updatedNodes[parentIndex];
      
-     // Check if child is out of bounds
      const PADDING = 20;
-     
-     // Visual offset for children inside container
      const VISUAL_OFFSET_X = CONTAINER_PADDING;
      const VISUAL_OFFSET_Y = CONTAINER_HEADER_HEIGHT + CONTAINER_PADDING;
 
@@ -277,7 +271,6 @@ const expandParents = (nodes, changedNodeId) => {
  * --- COMPONENTS ---
  */
 
-// 1. Connection Layer
 const ConnectionLayer = ({ nodes, edges, selectedEdgeId, onSelectEdge }) => {
   return (
     <svg className="absolute top-0 left-0 w-full h-full pointer-events-none overflow-visible z-[100]">
@@ -328,8 +321,6 @@ const ConnectionLayer = ({ nodes, edges, selectedEdgeId, onSelectEdge }) => {
         const path = `M ${start.x} ${start.y} C ${cp1.x} ${cp1.y}, ${cp2.x} ${cp2.y}, ${end.x} ${end.y}`;
         const isSelected = selectedEdgeId === edge.id;
 
-        // Calculate mid point of Bezier for text label (approx t=0.5)
-        // B(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
         const t = 0.5;
         const mt = 1-t;
         const labelX = (mt*mt*mt)*start.x + 3*(mt*mt)*t*cp1.x + 3*mt*(t*t)*cp2.x + (t*t*t)*end.x;
@@ -351,7 +342,6 @@ const ConnectionLayer = ({ nodes, edges, selectedEdgeId, onSelectEdge }) => {
             markerStart = isSelected ? "url(#arrowhead-start-selected)" : "url(#arrowhead-start)";
         }
 
-        // Approx width for label background: 6px per char + padding
         const labelText = edge.label || "";
         const labelWidth = Math.max(24, labelText.length * 6 + 16);
 
@@ -375,7 +365,6 @@ const ConnectionLayer = ({ nodes, edges, selectedEdgeId, onSelectEdge }) => {
               markerStart={markerStart}
               className="group-hover:stroke-blue-400 transition-colors duration-200"
             />
-            {/* Edge Label */}
             {edge.label && (
                 <g transform={`translate(${labelX}, ${labelY})`}>
                     <rect 
@@ -400,7 +389,6 @@ const ConnectionLayer = ({ nodes, edges, selectedEdgeId, onSelectEdge }) => {
   );
 };
 
-// 2. Node Component
 const NodeComponent = ({ 
   node, 
   allNodes, 
@@ -460,7 +448,7 @@ const NodeComponent = ({
 
   const handleKeyDown = (e) => {
     e.stopPropagation();
-    if (e.key === 'Enter' && !e.shiftKey) { // Allow shift+enter for new lines in text nodes
+    if (e.key === 'Enter' && !e.shiftKey) { 
       onUpdateLabel(node.id, tempLabel);
       setEditingId(null);
     }
@@ -493,7 +481,6 @@ const NodeComponent = ({
     baseClasses += 'cursor-grab active:cursor-grabbing ';
   }
 
-  // Tooltip Visibility Logic
   const showTooltip = node.description && (!isEditing && (isSelected && isPresentation));
 
   return (
@@ -508,7 +495,6 @@ const NodeComponent = ({
       onMouseDown={handleMouseDown}
       onDoubleClick={handleDoubleClick}
     >
-      {/* Content Rendering based on type */}
       {isText ? (
          <div className="w-full h-full">
             {isEditing ? (
@@ -552,7 +538,6 @@ const NodeComponent = ({
         </div>
       )}
 
-      {/* Tooltip for non-text nodes */}
       {!isText && node.description && !isEditing && (
           <div className={`absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-48 p-2 bg-slate-800 text-white text-xs rounded shadow-lg transition-opacity z-[100] pointer-events-none ${showTooltip ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
              {node.description}
@@ -594,7 +579,6 @@ const NodeComponent = ({
   );
 };
 
-// 3. Recursive Tree Item
 const TreeItem = ({ node, allNodes, onSelect, selectedId, level = 0 }) => {
   const children = allNodes.filter(n => n.parentId === node.id);
   const [expanded, setExpanded] = useState(true);
@@ -651,15 +635,85 @@ export default function FlowArchitect() {
   const [selectionType, setSelectionType] = useState(null); 
   const [editingId, setEditingId] = useState(null);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
+  const [toastMessage, setToastMessage] = useState(null);
 
   const [dragging, setDragging] = useState(null); 
   const [resizing, setResizing] = useState(null);
   const [panning, setPanning] = useState(null);
   const [connectingSource, setConnectingSource] = useState(null);
-  const [pinchDist, setPinchDist] = useState(null); // For pinch zoom
+  const [pinchDist, setPinchDist] = useState(null);
 
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  // SEO & META TAGS INJECTION
+  useEffect(() => {
+    // 1. Set Document Title
+    document.title = "FlowArchitect - Professional System Design Tool";
+
+    // 2. Helper to set/update meta tags
+    const setMetaTag = (name, content) => {
+      let element = document.querySelector(`meta[name="${name}"]`);
+      if (!element) {
+        element = document.createElement('meta');
+        element.setAttribute('name', name);
+        document.head.appendChild(element);
+      }
+      element.setAttribute('content', content);
+    };
+
+    const setOpenGraphTag = (property, content) => {
+      let element = document.querySelector(`meta[property="${property}"]`);
+      if (!element) {
+        element = document.createElement('meta');
+        element.setAttribute('property', property);
+        document.head.appendChild(element);
+      }
+      element.setAttribute('content', content);
+    };
+
+    // 3. Inject SEO Tags
+    setMetaTag("description", "Build high-level and low-level system design diagrams instantly with FlowArchitect. Free, intuitive, and developer-friendly.");
+    setMetaTag("keywords", "system design, diagram tool, flowchart, software architecture, react, visualizer");
+    setMetaTag("author", "FlowArchitect Team");
+
+    // 4. Inject Open Graph Tags (Social Share Previews)
+    setOpenGraphTag("og:title", "FlowArchitect - Visual System Design Tool");
+    setOpenGraphTag("og:description", "Create professional system architecture diagrams in seconds.");
+    setOpenGraphTag("og:type", "website");
+    setOpenGraphTag("og:url", window.location.href); 
+    // Note: In a real deployment, replace window.location.href with actual domain if needed
+  }, []);
+
+  // TOAST HELPER
+  const showToast = (msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleShare = async () => {
+    const shareData = {
+      title: 'FlowArchitect Diagram',
+      text: 'Check out this system architecture I designed with FlowArchitect!',
+      url: window.location.href
+    };
+
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+      } catch (err) {
+        // User cancelled, ignore
+      }
+    } else {
+      // Fallback
+      try {
+        await navigator.clipboard.writeText(window.location.href);
+        showToast("Link copied to clipboard!");
+      } catch (err) {
+        showToast("Failed to copy link.");
+      }
+    }
+  };
 
   const screenToWorld = (screenX, screenY) => {
     return {
@@ -672,7 +726,6 @@ export default function FlowArchitect() {
     const isContainer = type === 'container';
     const isText = type === 'text';
     const newId = generateId();
-    // Center new node in view
     const worldCenter = screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
     
     const newNode = {
@@ -748,7 +801,6 @@ export default function FlowArchitect() {
             }
         });
 
-        // LOCK CHECK
         if (parentId) {
             const parent = tempNodes.find(n => n.id === parentId);
             if (parent && parent.locked) return;
@@ -779,7 +831,6 @@ export default function FlowArchitect() {
     setNodes(tempNodes);
   };
 
-  // EXPORT / IMPORT
   const handleExportData = () => {
     const data = JSON.stringify({ nodes, edges, view }, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
@@ -803,7 +854,7 @@ export default function FlowArchitect() {
             if (data.view) setView(data.view);
           }
         } catch (err) {
-          alert('Invalid JSON file');
+          showToast('Invalid file format');
         }
       };
       reader.readAsText(file);
@@ -811,13 +862,10 @@ export default function FlowArchitect() {
   };
 
   const handleExportPDF = () => {
-    // Basic Print Trigger (User can Save as PDF)
     window.print();
   };
 
-
   const handleCanvasMouseDown = (e) => {
-    // Only handle left click (0) or middle click (1)
     if (e.button === 1 || mode === 'pan') {
       setPanning({ startX: e.clientX, startY: e.clientY, viewStartX: view.x, viewStartY: view.y });
       return;
@@ -838,7 +886,6 @@ export default function FlowArchitect() {
 
     const node = nodes.find(n => n.id === nodeId);
     
-    // Check if locked inside parent
     if (node.parentId) {
         const parent = nodes.find(p => p.id === node.parentId);
         if (parent && parent.locked) return; 
@@ -873,7 +920,6 @@ export default function FlowArchitect() {
   };
 
   const handleMouseMove = (e) => {
-    // Panning
     if (panning) {
       const dx = e.clientX - panning.startX;
       const dy = e.clientY - panning.startY;
@@ -883,7 +929,6 @@ export default function FlowArchitect() {
 
     const worldMouse = screenToWorld(e.clientX, e.clientY);
 
-    // Resizing
     if (resizing) {
       const dx = worldMouse.x - resizing.startX;
       const dy = worldMouse.y - resizing.startY;
@@ -918,7 +963,6 @@ export default function FlowArchitect() {
       return;
     }
 
-    // Dragging
     if (dragging) {
       const dx = worldMouse.x - dragging.startX;
       const dy = worldMouse.y - dragging.startY;
@@ -949,7 +993,7 @@ export default function FlowArchitect() {
         n.type === 'container' && 
         n.id !== draggedNode.id && 
         !descendants.includes(n.id) &&
-        !n.locked // Check 1: Don't consider locked containers as targets
+        !n.locked
       );
       
       candidates.sort((a, b) => (a.width * a.height) - (b.width * b.height));
@@ -1006,10 +1050,9 @@ export default function FlowArchitect() {
     }
   };
 
-  // Pinch Zoom Handlers (Touch)
   const handleTouchStart = (e) => {
     if (e.touches.length === 2) {
-       e.preventDefault(); // Prevent page zoom
+       e.preventDefault();
        const d = Math.hypot(
          e.touches[0].clientX - e.touches[1].clientX,
          e.touches[0].clientY - e.touches[1].clientY
@@ -1037,7 +1080,6 @@ export default function FlowArchitect() {
   };
 
   useEffect(() => {
-    // Prevent default browser zoom actions
     const preventDefault = (e) => e.preventDefault();
     const container = containerRef.current;
     
@@ -1045,7 +1087,6 @@ export default function FlowArchitect() {
         container.addEventListener('touchstart', handleTouchStart, { passive: false });
         container.addEventListener('touchmove', handleTouchMove, { passive: false });
         container.addEventListener('touchend', handleTouchEnd);
-        // We also want to prevent ctrl+wheel browser zoom, handled in onWheel but explicit here safer
         container.addEventListener('wheel', (e) => { if(e.ctrlKey) e.preventDefault(); }, { passive: false });
     }
 
@@ -1087,15 +1128,23 @@ export default function FlowArchitect() {
         <div className="w-px h-6 bg-slate-200 mx-2"></div>
         <button onClick={() => setShowLayerPanel(!showLayerPanel)} className={`p-2 rounded-lg ${showLayerPanel ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-500'}`} title="Layers"><List size={18} /></button>
         
-        {/* EXPORT TOOLS */}
+        {/* EXPORT / IMPORT / SHARE */}
         <div className="w-px h-6 bg-slate-200 mx-2"></div>
+        <button onClick={handleShare} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Share"><Share2 size={18} /></button>
         <button onClick={handleExportData} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Save File (JSON)"><Download size={18} /></button>
         <button onClick={() => fileInputRef.current?.click()} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Open File (JSON)"><Upload size={18} /></button>
         <button onClick={handleExportPDF} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Export PDF"><FileText size={18} /></button>
         <input ref={fileInputRef} type="file" accept=".json" onChange={handleImportData} className="hidden" />
       </div>
 
-      {/* LEFT SIDEBAR (Edit Mode Only) */}
+      {/* TOAST MESSAGE */}
+      {toastMessage && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-sm px-4 py-2 rounded-full shadow-xl flex items-center gap-2 z-[60] animate-in fade-in slide-in-from-top-4">
+           <CheckCircle2 size={16} className="text-green-400"/> {toastMessage}
+        </div>
+      )}
+
+      {/* LEFT SIDEBAR */}
       <div className={`absolute left-4 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-2 bg-white/90 backdrop-blur-md border border-slate-200 p-2 rounded-2xl shadow-xl transition-all ${mode === 'presentation' ? '-translate-x-32' : 'translate-x-0'} print:hidden`}>
         <button onClick={() => addNode('container')} className="p-3 hover:bg-blue-50 rounded-xl group relative"><Layers size={24} className="text-slate-600 group-hover:text-blue-600" /></button>
         <button onClick={() => addNode('block')} className="p-3 hover:bg-blue-50 rounded-xl group relative"><Box size={24} className="text-slate-600 group-hover:text-blue-600" /></button>
@@ -1128,7 +1177,7 @@ export default function FlowArchitect() {
         </div>
       )}
 
-      {/* PROPERTY PANEL (Edit Mode) */}
+      {/* PROPERTY PANEL */}
       {selectedId && mode !== 'presentation' && !showLayerPanel && (
         <div className="absolute right-4 top-20 w-72 bg-white/95 backdrop-blur shadow-2xl border border-slate-200 rounded-xl p-4 z-50 print:hidden">
            <div className="flex justify-between items-center mb-4 pb-2 border-b border-slate-100">
@@ -1163,7 +1212,6 @@ export default function FlowArchitect() {
                  )}
                </div>
                
-               {/* Container Specific Properties */}
                {selectedNode.type === 'container' && (
                   <div className="flex items-center justify-between py-2 border-y border-slate-100">
                      <span className="text-xs font-medium text-slate-600 flex items-center gap-2">
