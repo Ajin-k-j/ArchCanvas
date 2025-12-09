@@ -29,7 +29,12 @@ import {
   FileText,
   Type,
   Share2,
-  CheckCircle2
+  CheckCircle2,
+  Undo,
+  Redo,
+  FilePlus,
+  Copy,
+  AlertTriangle
 } from 'lucide-react';
 
 /**
@@ -271,7 +276,24 @@ const expandParents = (nodes, changedNodeId) => {
  * --- COMPONENTS ---
  */
 
-const ConnectionLayer = ({ nodes, edges, selectedEdgeId, onSelectEdge }) => {
+const ConnectionLayer = ({ nodes, edges, selectedEdgeId, onSelectEdge, selectedNodeId, isPresentation }) => {
+  const getRelatedNodeIds = () => {
+     if (!selectedNodeId) return new Set();
+     const related = new Set([selectedNodeId]);
+     
+     // In presentation mode, clicking a container animates all its children's flows
+     if (isPresentation) {
+        const selectedNode = nodes.find(n => n.id === selectedNodeId);
+        if (selectedNode && selectedNode.type === 'container') {
+             const descendants = getDescendants(selectedNodeId, nodes);
+             descendants.forEach(id => related.add(id));
+        }
+     }
+     return related;
+  };
+
+  const relatedNodeIds = getRelatedNodeIds();
+
   return (
     <svg className="absolute top-0 left-0 w-full h-full pointer-events-none overflow-visible z-[100]">
       <defs>
@@ -281,6 +303,13 @@ const ConnectionLayer = ({ nodes, edges, selectedEdgeId, onSelectEdge }) => {
         <marker id="arrowhead-end-selected" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
           <path d="M2,2 L10,6 L2,10 L2,2" fill="#3b82f6" />
         </marker>
+        <marker id="arrowhead-end-outgoing" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+          <path d="M2,2 L10,6 L2,10 L2,2" fill="#2563eb" />
+        </marker>
+         <marker id="arrowhead-end-incoming" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+          <path d="M2,2 L10,6 L2,10 L2,2" fill="#93c5fd" />
+        </marker>
+
         <marker id="arrowhead-start" markerWidth="12" markerHeight="12" refX="2" refY="6" orient="auto">
           <path d="M10,2 L2,6 L10,10 L10,2" fill="#94a3b8" />
         </marker>
@@ -318,9 +347,53 @@ const ConnectionLayer = ({ nodes, edges, selectedEdgeId, onSelectEdge }) => {
             case 'top': cp2.y -= controlDist; break;
         }
 
-        const path = `M ${start.x} ${start.y} C ${cp1.x} ${cp1.y}, ${cp2.x} ${cp2.y}, ${end.x} ${end.y}`;
-        const isSelected = selectedEdgeId === edge.id;
+        const arrowType = edge.arrow || 'end'; 
+        
+        let drawnEnd = { ...end };
+        let drawnStart = { ...start };
+        const arrowOffset = 10; 
 
+        if (arrowType === 'end' || arrowType === 'both') {
+            const d = Math.hypot(end.x - cp2.x, end.y - cp2.y);
+            if (d > arrowOffset) {
+                const ratio = (d - arrowOffset) / d;
+                drawnEnd.x = cp2.x + (end.x - cp2.x) * ratio;
+                drawnEnd.y = cp2.y + (end.y - cp2.y) * ratio;
+            }
+        }
+        
+        if (arrowType === 'start' || arrowType === 'both') {
+             const d = Math.hypot(start.x - cp1.x, start.y - cp1.y);
+             if (d > arrowOffset) {
+                 const ratio = (d - arrowOffset) / d;
+                 drawnStart.x = cp1.x + (start.x - cp1.x) * ratio;
+                 drawnStart.y = cp1.y + (start.y - cp1.y) * ratio;
+             }
+        }
+
+        const fullPath = `M ${start.x} ${start.y} C ${cp1.x} ${cp1.y}, ${cp2.x} ${cp2.y}, ${end.x} ${end.y}`;
+        const visualPath = `M ${drawnStart.x} ${drawnStart.y} C ${cp1.x} ${cp1.y}, ${cp2.x} ${cp2.y}, ${drawnEnd.x} ${drawnEnd.y}`;
+        const markerPath = fullPath; 
+
+        // --- HIGHLIGHT & ANIMATION LOGIC ---
+        const isSelectedEdge = selectedEdgeId === edge.id;
+        const isRelated = relatedNodeIds.has(edge.source) || relatedNodeIds.has(edge.target);
+        
+        let strokeColor = "#cbd5e1"; // slate-300
+        let strokeWidth = "2"; // Fixed width for all states
+        
+        if (isSelectedEdge) {
+            strokeColor = "#3b82f6";
+        } else if (isRelated) {
+            if (relatedNodeIds.has(edge.source)) {
+                strokeColor = "#2563eb"; 
+            } else {
+                strokeColor = "#93c5fd"; 
+            }
+        } 
+
+        const shouldAnimate = isPresentation && isRelated && (arrowType === 'end' || arrowType === 'start');
+        
         const t = 0.5;
         const mt = 1-t;
         const labelX = (mt*mt*mt)*start.x + 3*(mt*mt)*t*cp1.x + 3*mt*(t*t)*cp2.x + (t*t*t)*end.x;
@@ -330,16 +403,18 @@ const ConnectionLayer = ({ nodes, edges, selectedEdgeId, onSelectEdge }) => {
         if (edge.style === 'dashed') strokeDasharray = "8,5";
         if (edge.style === 'dotted') strokeDasharray = "3,3";
         
-        const arrowType = edge.arrow || 'end'; 
-        
         let markerEnd = null;
         let markerStart = null;
 
         if (arrowType === 'end' || arrowType === 'both') {
-            markerEnd = isSelected ? "url(#arrowhead-end-selected)" : "url(#arrowhead-end)";
+            if (isSelectedEdge) markerEnd = "url(#arrowhead-end-selected)";
+            else if (isRelated && relatedNodeIds.has(edge.source)) markerEnd = "url(#arrowhead-end-outgoing)";
+            else if (isRelated) markerEnd = "url(#arrowhead-end-incoming)";
+            else markerEnd = "url(#arrowhead-end)";
         }
         if (arrowType === 'start' || arrowType === 'both') {
-            markerStart = isSelected ? "url(#arrowhead-start-selected)" : "url(#arrowhead-start)";
+            if (isSelectedEdge) markerStart = "url(#arrowhead-start-selected)";
+            else markerStart = "url(#arrowhead-start)";
         }
 
         const labelText = edge.label || "";
@@ -348,23 +423,48 @@ const ConnectionLayer = ({ nodes, edges, selectedEdgeId, onSelectEdge }) => {
         return (
           <g 
             key={edge.id} 
-            className="pointer-events-auto cursor-pointer group"
+            className={`pointer-events-auto cursor-pointer group`}
             onClick={(e) => {
               e.stopPropagation();
               onSelectEdge(edge.id);
             }}
           >
-            <path d={path} stroke="transparent" strokeWidth="20" fill="none" />
+            <path d={fullPath} stroke="transparent" strokeWidth="20" fill="none" />
+            
             <path
-              d={path}
-              stroke={isSelected ? "#3b82f6" : "#cbd5e1"}
-              strokeWidth={isSelected ? "3" : "2"}
+              d={visualPath}
+              stroke={strokeColor}
+              strokeWidth={strokeWidth}
               fill="none"
               strokeDasharray={strokeDasharray}
-              markerEnd={markerEnd}
-              markerStart={markerStart}
-              className="group-hover:stroke-blue-400 transition-colors duration-200"
+              markerEnd={null}
+              markerStart={null}
+              className={`transition-colors duration-300 ${!isPresentation && !selectedNodeId ? 'group-hover:stroke-blue-400' : ''}`}
             />
+
+            {shouldAnimate && (
+               <path
+                  d={visualPath}
+                  stroke="white"
+                  strokeWidth="2"
+                  fill="none"
+                  strokeDasharray="6,6"
+                  markerEnd={null} 
+                  markerStart={null}
+                  className="flow-animation-overlay opacity-80"
+                  style={{ pointerEvents: 'none' }}
+               />
+            )}
+
+            <path 
+                d={markerPath} 
+                stroke="transparent" 
+                strokeWidth={strokeWidth} 
+                fill="none" 
+                markerEnd={markerEnd} 
+                markerStart={markerStart} 
+            />
+
             {edge.label && (
                 <g transform={`translate(${labelX}, ${labelY})`}>
                     <rect 
@@ -402,7 +502,9 @@ const NodeComponent = ({
   onConnectClick,
   editingId,
   setEditingId,
-  onUpdateLabel
+  onUpdateLabel,
+  disableTooltip,
+  onPanStart 
 }) => {
   const children = allNodes.filter((n) => n.parentId === node.id);
   const isSelected = selectedId === node.id;
@@ -419,15 +521,21 @@ const NodeComponent = ({
 
   const handleMouseDown = (e) => {
     if (isPresentation) {
-      e.stopPropagation();
+      e.stopPropagation(); 
       onSelect(node.id);
+      
+      if (onPanStart) {
+          onPanStart(e.clientX, e.clientY);
+      }
       return;
     }
+    
     if (isConnectMode) {
        e.stopPropagation();
        onConnectClick(node.id);
        return;
     }
+    
     e.stopPropagation();
     onSelect(node.id);
     if (!isEditing) {
@@ -441,7 +549,7 @@ const NodeComponent = ({
   };
 
   const handleDoubleClick = (e) => {
-    if (isPresentation) return;
+    if (isPresentation) return; 
     e.stopPropagation();
     setEditingId(node.id);
   };
@@ -481,7 +589,8 @@ const NodeComponent = ({
     baseClasses += 'cursor-grab active:cursor-grabbing ';
   }
 
-  const showTooltip = node.description && (!isEditing && (isSelected && isPresentation));
+  const showTooltip = node.description && isSelected && !isEditing && !disableTooltip;
+  const tooltipOpacityClass = showTooltip ? 'opacity-100' : 'opacity-0';
 
   return (
     <div
@@ -539,7 +648,7 @@ const NodeComponent = ({
       )}
 
       {!isText && node.description && !isEditing && (
-          <div className={`absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-48 p-2 bg-slate-800 text-white text-xs rounded shadow-lg transition-opacity z-[100] pointer-events-none ${showTooltip ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+          <div className={`absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-48 p-2 bg-slate-800 text-white text-xs rounded shadow-lg transition-opacity z-[100] pointer-events-none ${tooltipOpacityClass}`}>
              {node.description}
              <div className="absolute left-1/2 -translate-x-1/2 top-full border-4 border-transparent border-t-slate-800"></div>
           </div>
@@ -563,6 +672,8 @@ const NodeComponent = ({
               editingId={editingId}
               setEditingId={setEditingId}
               onUpdateLabel={onUpdateLabel}
+              disableTooltip={disableTooltip}
+              onPanStart={onPanStart}
             />
           ))}
         </div>
@@ -631,11 +742,14 @@ export default function FlowArchitect() {
 
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
   const [mode, setMode] = useState('select'); 
+  const [isPresentation, setIsPresentation] = useState(false); 
   const [selectedId, setSelectedId] = useState(null); 
   const [selectionType, setSelectionType] = useState(null); 
   const [editingId, setEditingId] = useState(null);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
+  const [activePanel, setActivePanel] = useState(null); // 'layers' | 'properties'
   const [toastMessage, setToastMessage] = useState(null);
+  const [showNewFileModal, setShowNewFileModal] = useState(false);
 
   const [dragging, setDragging] = useState(null); 
   const [resizing, setResizing] = useState(null);
@@ -643,15 +757,15 @@ export default function FlowArchitect() {
   const [connectingSource, setConnectingSource] = useState(null);
   const [pinchDist, setPinchDist] = useState(null);
 
+  const [history, setHistory] = useState([]);
+  const [currentStep, setCurrentStep] = useState(-1);
+
   const containerRef = useRef(null);
   const fileInputRef = useRef(null);
 
   // SEO & META TAGS INJECTION
   useEffect(() => {
-    // 1. Set Document Title
     document.title = "FlowArchitect - Professional System Design Tool";
-
-    // 2. Helper to set/update meta tags
     const setMetaTag = (name, content) => {
       let element = document.querySelector(`meta[name="${name}"]`);
       if (!element) {
@@ -661,7 +775,6 @@ export default function FlowArchitect() {
       }
       element.setAttribute('content', content);
     };
-
     const setOpenGraphTag = (property, content) => {
       let element = document.querySelector(`meta[property="${property}"]`);
       if (!element) {
@@ -671,19 +784,79 @@ export default function FlowArchitect() {
       }
       element.setAttribute('content', content);
     };
-
-    // 3. Inject SEO Tags
     setMetaTag("description", "Build high-level and low-level system design diagrams instantly with FlowArchitect. Free, intuitive, and developer-friendly.");
     setMetaTag("keywords", "system design, diagram tool, flowchart, software architecture, react, visualizer");
     setMetaTag("author", "FlowArchitect Team");
-
-    // 4. Inject Open Graph Tags (Social Share Previews)
     setOpenGraphTag("og:title", "FlowArchitect - Visual System Design Tool");
     setOpenGraphTag("og:description", "Create professional system architecture diagrams in seconds.");
     setOpenGraphTag("og:type", "website");
     setOpenGraphTag("og:url", window.location.href); 
-    // Note: In a real deployment, replace window.location.href with actual domain if needed
   }, []);
+
+  // LOAD FROM STORAGE
+  useEffect(() => {
+    const saved = localStorage.getItem('flowArchitectData');
+    if (saved) {
+      try {
+        const { nodes: savedNodes, edges: savedEdges, view: savedView } = JSON.parse(saved);
+        const validNodes = savedNodes || [];
+        const validEdges = savedEdges || [];
+        setNodes(validNodes);
+        setEdges(validEdges);
+        if (savedView) setView(savedView);
+        
+        // Init History
+        setHistory([{ nodes: validNodes, edges: validEdges }]);
+        setCurrentStep(0);
+      } catch (e) {
+        console.error("Failed to load data", e);
+        setHistory([{ nodes: [], edges: [] }]);
+        setCurrentStep(0);
+      }
+    } else {
+        setHistory([{ nodes: [], edges: [] }]);
+        setCurrentStep(0);
+    }
+  }, []);
+
+  // SAVE TO STORAGE
+  useEffect(() => {
+    if (nodes.length > 0 || edges.length > 0) {
+        localStorage.setItem('flowArchitectData', JSON.stringify({ nodes, edges, view }));
+    }
+  }, [nodes, edges, view]);
+
+  // HISTORY MANAGEMENT
+  const recordHistory = useCallback((newNodes, newEdges) => {
+      setHistory(prev => {
+          const newHistory = prev.slice(0, currentStep + 1);
+          newHistory.push({ nodes: newNodes, edges: newEdges });
+          // Limit history if needed, e.g., 50 steps
+          if (newHistory.length > 50) newHistory.shift();
+          return newHistory;
+      });
+      setCurrentStep(prev => (prev < 49 ? prev + 1 : 49));
+  }, [currentStep]);
+
+  const handleUndo = () => {
+      if (currentStep > 0) {
+          const newStep = currentStep - 1;
+          const state = history[newStep];
+          setNodes(state.nodes);
+          setEdges(state.edges);
+          setCurrentStep(newStep);
+      }
+  };
+
+  const handleRedo = () => {
+      if (currentStep < history.length - 1) {
+          const newStep = currentStep + 1;
+          const state = history[newStep];
+          setNodes(state.nodes);
+          setEdges(state.edges);
+          setCurrentStep(newStep);
+      }
+  };
 
   // TOAST HELPER
   const showToast = (msg) => {
@@ -702,10 +875,8 @@ export default function FlowArchitect() {
       try {
         await navigator.share(shareData);
       } catch (err) {
-        // User cancelled, ignore
       }
     } else {
-      // Fallback
       try {
         await navigator.clipboard.writeText(window.location.href);
         showToast("Link copied to clipboard!");
@@ -740,30 +911,67 @@ export default function FlowArchitect() {
       description: '',
       locked: false 
     };
-    setNodes([...nodes, newNode]);
+    
+    const newNodes = [...nodes, newNode];
+    setNodes(newNodes);
+    recordHistory(newNodes, edges);
+    
     setSelectedId(newId);
     setSelectionType('node');
+    setActivePanel('properties');
     setEditingId(newId);
   };
 
-  const deleteSelection = () => {
-    if (!selectedId) return;
-    if (selectionType === 'edge') {
-      setEdges(edges.filter(e => e.id !== selectedId));
-      setSelectedId(null);
-      setSelectionType(null);
-    } else if (selectionType === 'node') {
-      const toDelete = [selectedId, ...getDescendants(selectedId, nodes)];
-      setNodes(nodes.filter(n => !toDelete.includes(n.id)));
-      setEdges(edges.filter(e => !toDelete.includes(e.source) && !toDelete.includes(e.target)));
-      setSelectedId(null);
-      setSelectionType(null);
+  const deleteSelection = (specificId) => {
+    const idToDelete = specificId || selectedId;
+    if (!idToDelete) return;
+
+    let newNodes = nodes;
+    let newEdges = edges;
+
+    if (selectionType === 'edge' && !specificId) {
+        newEdges = edges.filter(e => e.id !== selectedId);
+    } else {
+        // Deleting a node (either selected or passed via ID)
+        const toDelete = [idToDelete, ...getDescendants(idToDelete, nodes)];
+        newNodes = nodes.filter(n => !toDelete.includes(n.id));
+        newEdges = edges.filter(e => !toDelete.includes(e.source) && !toDelete.includes(e.target));
     }
+    
+    setNodes(newNodes);
+    setEdges(newEdges);
+    recordHistory(newNodes, newEdges);
+    
+    if (selectedId === idToDelete) {
+        setSelectedId(null);
+        setSelectionType(null);
+    }
+  };
+
+  const handleDuplicate = (nodeId) => {
+      const nodeToCopy = nodes.find(n => n.id === nodeId);
+      if (!nodeToCopy) return;
+
+      const newId = generateId();
+      const newNode = {
+          ...nodeToCopy,
+          id: newId,
+          x: nodeToCopy.x + 20,
+          y: nodeToCopy.y + 20,
+          label: `${nodeToCopy.label} (Copy)`
+      };
+
+      const newNodes = [...nodes, newNode];
+      setNodes(newNodes);
+      recordHistory(newNodes, edges);
+      setSelectedId(newId);
+      setSelectionType('node');
   };
 
   const selectAndCenterNode = (id) => {
     setSelectedId(id);
     setSelectionType('node');
+    setActivePanel('properties');
     
     const globalPos = getGlobalPosition(id, nodes);
     const nodeCenterX = globalPos.x + globalPos.width / 2;
@@ -781,13 +989,24 @@ export default function FlowArchitect() {
 
   const updateEdgeStyle = (updates) => {
     if (selectionType === 'edge' && selectedId) {
-      setEdges(edges.map(e => e.id === selectedId ? { ...e, ...updates } : e));
+      const newEdges = edges.map(e => e.id === selectedId ? { ...e, ...updates } : e);
+      setEdges(newEdges);
+      recordHistory(nodes, newEdges);
     }
   };
   
   const updateNodeProperty = (id, updates) => {
-      setNodes(nodes.map(n => n.id === id ? { ...n, ...updates } : n));
+      const newNodes = nodes.map(n => n.id === id ? { ...n, ...updates } : n);
+      setNodes(newNodes);
+      // NOTE: For inputs calling this on Change, we are spamming history. 
+      // Ideally should be onBlur. But for now we rely on the user.
   };
+  
+  const updateNodeLabel = (id, newLabel) => {
+      const newNodes = nodes.map(n => n.id === id ? { ...n, label: newLabel } : n);
+      setNodes(newNodes);
+      recordHistory(newNodes, edges);
+  }
 
   const handleRecursiveLayout = () => {
     let tempNodes = JSON.parse(JSON.stringify(nodes));
@@ -829,6 +1048,7 @@ export default function FlowArchitect() {
 
     layoutScope(null);
     setNodes(tempNodes);
+    recordHistory(tempNodes, edges);
   };
 
   const handleExportData = () => {
@@ -839,6 +1059,19 @@ export default function FlowArchitect() {
     a.href = url;
     a.download = 'flow-architect-diagram.json';
     a.click();
+  };
+
+  const handleNewFile = () => {
+      setNodes([]);
+      setEdges([]);
+      setView({ x: 0, y: 0, scale: 1 });
+      setHistory([{ nodes: [], edges: [] }]);
+      setCurrentStep(0);
+      setSelectedId(null);
+      setSelectionType(null);
+      localStorage.removeItem('flowArchitectData');
+      setShowNewFileModal(false);
+      showToast("Created new diagram");
   };
 
   const handleImportData = (e) => {
@@ -852,6 +1085,7 @@ export default function FlowArchitect() {
             setNodes(data.nodes);
             setEdges(data.edges);
             if (data.view) setView(data.view);
+            recordHistory(data.nodes, data.edges);
           }
         } catch (err) {
           showToast('Invalid file format');
@@ -866,12 +1100,9 @@ export default function FlowArchitect() {
   };
 
   const handleCanvasMouseDown = (e) => {
-    if (e.button === 1 || mode === 'pan') {
-      setPanning({ startX: e.clientX, startY: e.clientY, viewStartX: view.x, viewStartY: view.y });
-      return;
-    }
+    const isInteractive = e.target.closest('.pointer-events-auto') || e.target.closest('button') || e.target.closest('input') || e.target.closest('textarea');
     
-    if (e.target === containerRef.current || e.target.tagName === 'svg') {
+    if (!isInteractive) {
       setSelectedId(null);
       setSelectionType(null);
       setEditingId(null);
@@ -879,10 +1110,15 @@ export default function FlowArchitect() {
          setConnectingSource(null);
       }
     }
+
+    if (e.button === 1 || mode === 'pan') {
+      setPanning({ startX: e.clientX, startY: e.clientY, viewStartX: view.x, viewStartY: view.y });
+      return;
+    }
   };
 
   const handleNodeDragStart = (e, nodeId) => {
-    if (mode === 'presentation' || resizing || mode === 'connect') return;
+    if (isPresentation || resizing || mode === 'connect') return;
 
     const node = nodes.find(n => n.id === nodeId);
     
@@ -903,7 +1139,7 @@ export default function FlowArchitect() {
   };
 
   const handleResizeStart = (e, nodeId, handle) => {
-    if (mode === 'presentation') return;
+    if (isPresentation) return;
     const node = nodes.find(n => n.id === nodeId);
     const worldMouse = screenToWorld(e.clientX, e.clientY);
 
@@ -984,6 +1220,9 @@ export default function FlowArchitect() {
         return;
       }
 
+      // Check if we need to record history (only if we actually moved something)
+      const hasMoved = draggedNode.x !== dragging.originalX || draggedNode.y !== dragging.originalY;
+
       const globalPos = getGlobalPosition(draggedNode.id, nodes);
       const nodeCenterX = globalPos.x + draggedNode.width / 2;
       const nodeCenterY = globalPos.y + draggedNode.height / 2;
@@ -1007,17 +1246,28 @@ export default function FlowArchitect() {
         }
       }
 
+      let finalNodes = nodes;
+
       if (newParent && newParent.id !== draggedNode.parentId) {
         const newParentGlobal = getGlobalPosition(newParent.id, nodes);
-        setNodes(prev => prev.map(n => n.id === dragging.id ? 
+        finalNodes = nodes.map(n => n.id === dragging.id ? 
           { ...n, parentId: newParent.id, x: globalPos.x - newParentGlobal.x, y: globalPos.y - newParentGlobal.y } : n
-        ));
+        );
+        setNodes(finalNodes);
       } else if (!newParent && draggedNode.parentId !== null) {
-        setNodes(prev => prev.map(n => n.id === dragging.id ? 
+        finalNodes = nodes.map(n => n.id === dragging.id ? 
           { ...n, parentId: null, x: globalPos.x, y: globalPos.y } : n
-        ));
+        );
+        setNodes(finalNodes);
       }
+      
+      if (hasMoved || finalNodes !== nodes) {
+          recordHistory(finalNodes, edges);
+      }
+
       setDragging(null);
+    } else if (resizing) {
+        recordHistory(nodes, edges);
     }
   };
 
@@ -1029,7 +1279,9 @@ export default function FlowArchitect() {
     } else {
       if (connectingSource !== nodeId) {
         if (!edges.find(e => (e.source === connectingSource && e.target === nodeId) || (e.target === connectingSource && e.source === nodeId))) {
-           setEdges([...edges, { id: generateId(), source: connectingSource, target: nodeId, style: 'solid', arrow: 'end' }]);
+           const newEdges = [...edges, { id: generateId(), source: connectingSource, target: nodeId, style: 'solid', arrow: 'end' }];
+           setEdges(newEdges);
+           recordHistory(nodes, newEdges);
         }
         setConnectingSource(null);
         setMode('select');
@@ -1079,6 +1331,19 @@ export default function FlowArchitect() {
     setPinchDist(null);
   };
 
+  const togglePresentation = () => {
+      if (isPresentation) {
+          setIsPresentation(false);
+          setMode('select');
+      } else {
+          setIsPresentation(true);
+          setMode('pan'); 
+          setSelectedId(null);
+          setSelectionType(null);
+          setShowLayerPanel(false); 
+      }
+  };
+
   useEffect(() => {
     const preventDefault = (e) => e.preventDefault();
     const container = containerRef.current;
@@ -1093,6 +1358,11 @@ export default function FlowArchitect() {
     const handleKeyDown = (e) => {
       if (editingId) return;
       if (e.key === 'Delete' || e.key === 'Backspace') deleteSelection();
+      // Undo/Redo shortcuts
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+          if (e.shiftKey) handleRedo();
+          else handleUndo();
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     
@@ -1105,50 +1375,122 @@ export default function FlowArchitect() {
             container.removeEventListener('wheel', preventDefault);
         }
     };
-  }, [selectedId, selectionType, nodes, edges, editingId, pinchDist, view.scale]);
+  }, [selectedId, selectionType, nodes, edges, editingId, pinchDist, view.scale, history, currentStep]);
 
   const selectedNode = selectedId && selectionType === 'node' ? nodes.find(n => n.id === selectedId) : null;
   const selectedEdge = selectedId && selectionType === 'edge' ? edges.find(e => e.id === selectedId) : null;
 
+  const descendantsOfSelected = (selectedId && nodes.find(n=>n.id===selectedId)?.type === 'container') 
+                                      ? getDescendants(selectedId, nodes) 
+                                      : [];
+
   return (
     <div className="flex h-screen w-screen bg-slate-50 overflow-hidden font-sans text-slate-800 select-none">
-      
+      <style>{`
+        @keyframes flow {
+            to {
+                stroke-dashoffset: -20;
+            }
+        }
+        .flow-animation-overlay {
+            animation: flow 1s linear infinite;
+        }
+      `}</style>
+
+      {/* NEW FILE MODAL */}
+      {showNewFileModal && (
+        <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md animate-in fade-in zoom-in duration-200">
+                <div className="flex items-center gap-3 text-amber-600 mb-4">
+                    <AlertTriangle size={32} />
+                    <h2 className="text-xl font-bold text-slate-900">Start New Diagram?</h2>
+                </div>
+                <p className="text-slate-600 mb-6 leading-relaxed">
+                    This action will clear your current canvas. All unsaved changes will be lost. We recommend downloading your current work before proceeding.
+                </p>
+                <div className="flex flex-col gap-3">
+                    <button 
+                        onClick={handleExportData} 
+                        className="w-full flex items-center justify-center gap-2 py-3 border-2 border-slate-200 rounded-xl font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+                    >
+                        <Download size={18}/> Download Current Work
+                    </button>
+                    <div className="flex gap-3">
+                        <button 
+                            onClick={() => setShowNewFileModal(false)} 
+                            className="flex-1 py-3 text-slate-500 font-semibold hover:text-slate-800 transition-colors"
+                        >
+                            Cancel
+                        </button>
+                        <button 
+                            onClick={handleNewFile}
+                            className="flex-1 py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all"
+                        >
+                            Create New
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
+
       {/* TOOLBAR */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 bg-white/90 backdrop-blur-md border border-slate-200 p-1.5 rounded-2xl shadow-xl print:hidden">
-        <div className="flex gap-1">
+        <div className={`flex gap-1 transition-opacity ${isPresentation ? 'pointer-events-none opacity-30' : ''}`}>
           <button onClick={() => { setMode('select'); setConnectingSource(null); }} className={`p-2 rounded-lg ${mode === 'select' ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-500'}`} title="Select (V)"><MousePointer2 size={18} /></button>
           <button onClick={() => setMode('pan')} className={`p-2 rounded-lg ${mode === 'pan' ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-500'}`} title="Pan (Space)"><Hand size={18} /></button>
-          <button onClick={() => { setMode('connect'); setConnectingSource(null); }} className={`p-2 rounded-lg ${mode === 'connect' ? 'bg-blue-100 text-blue-700 ring-2 ring-blue-500' : 'hover:bg-slate-100 text-slate-500'}`} title="Connect (C)"><Zap size={18} /></button>
+          <button 
+            onClick={() => { 
+                setMode('connect'); 
+                if(selectedId && selectionType === 'node') {
+                    setConnectingSource(selectedId);
+                    showToast("Click target to connect");
+                } else {
+                    setConnectingSource(null); 
+                }
+            }} 
+            className={`p-2 rounded-lg ${mode === 'connect' ? 'bg-blue-100 text-blue-700 ring-2 ring-blue-500' : 'hover:bg-slate-100 text-slate-500'}`} 
+            title="Connect (C)"
+          >
+            <Zap size={18} />
+          </button>
         </div>
         <div className="w-px h-6 bg-slate-200 mx-2"></div>
-        <button onClick={() => { setMode(mode === 'presentation' ? 'select' : 'presentation'); setSelectedId(null); setSelectionType(null); }} className={`flex items-center gap-2 px-3 py-2 rounded-lg font-medium text-sm ${mode === 'presentation' ? 'bg-green-100 text-green-700' : 'bg-slate-900 text-white'}`}>
-          {mode === 'presentation' ? <Edit3 size={14}/> : <Play size={14} fill="currentColor" />}
-          {mode === 'presentation' ? 'Edit' : 'Present'}
+        <button onClick={handleUndo} className={`p-2 hover:bg-slate-100 rounded-lg text-slate-500 ${currentStep <= 0 ? 'opacity-30 pointer-events-none' : ''} ${isPresentation ? 'pointer-events-none opacity-30' : ''}`} title="Undo (Ctrl+Z)"><Undo size={18} /></button>
+        <button onClick={handleRedo} className={`p-2 hover:bg-slate-100 rounded-lg text-slate-500 ${currentStep >= history.length - 1 ? 'opacity-30 pointer-events-none' : ''} ${isPresentation ? 'pointer-events-none opacity-30' : ''}`} title="Redo (Ctrl+Shift+Z)"><Redo size={18} /></button>
+        <div className="w-px h-6 bg-slate-200 mx-2"></div>
+        <button onClick={togglePresentation} className={`flex items-center gap-2 px-3 py-2 rounded-lg font-medium text-sm ${isPresentation ? 'bg-green-100 text-green-700' : 'bg-slate-900 text-white'}`}>
+          {isPresentation ? <Edit3 size={14}/> : <Play size={14} fill="currentColor" />}
+          {isPresentation ? 'Edit' : 'Present'}
         </button>
         <div className="w-px h-6 bg-slate-200 mx-2"></div>
-        <button onClick={() => setShowLayerPanel(!showLayerPanel)} className={`p-2 rounded-lg ${showLayerPanel ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-500'}`} title="Layers"><List size={18} /></button>
-        
-        {/* EXPORT / IMPORT / SHARE */}
-        <div className="w-px h-6 bg-slate-200 mx-2"></div>
-        <button onClick={handleShare} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Share"><Share2 size={18} /></button>
-        <button onClick={handleExportData} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Save File (JSON)"><Download size={18} /></button>
-        <button onClick={() => fileInputRef.current?.click()} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Open File (JSON)"><Upload size={18} /></button>
-        <button onClick={handleExportPDF} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Export PDF"><FileText size={18} /></button>
+        <div className={`flex gap-1 transition-opacity ${isPresentation ? 'pointer-events-none opacity-30' : ''}`}>
+           <button onClick={() => { setShowLayerPanel(!showLayerPanel); if(!showLayerPanel) setActivePanel('layers'); }} className={`p-2 rounded-lg ${showLayerPanel ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-500'}`} title="Layers"><List size={18} /></button>
+           
+           {/* EXPORT / IMPORT / SHARE */}
+           <div className="w-px h-6 bg-slate-200 mx-2"></div>
+           <button onClick={handleShare} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Share"><Share2 size={18} /></button>
+           <button onClick={handleExportData} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Save File (JSON)"><Download size={18} /></button>
+           <button onClick={() => fileInputRef.current?.click()} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Open File (JSON)"><Upload size={18} /></button>
+           <button onClick={handleExportPDF} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Export PDF"><FileText size={18} /></button>
+        </div>
         <input ref={fileInputRef} type="file" accept=".json" onChange={handleImportData} className="hidden" />
       </div>
 
       {/* TOAST MESSAGE */}
       {toastMessage && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-sm px-4 py-2 rounded-full shadow-xl flex items-center gap-2 z-[60] animate-in fade-in slide-in-from-top-4">
-           <CheckCircle2 size={16} className="text-green-400"/> {toastMessage}
+            <CheckCircle2 size={16} className="text-green-400"/> {toastMessage}
         </div>
       )}
 
       {/* LEFT SIDEBAR */}
-      <div className={`absolute left-4 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-2 bg-white/90 backdrop-blur-md border border-slate-200 p-2 rounded-2xl shadow-xl transition-all ${mode === 'presentation' ? '-translate-x-32' : 'translate-x-0'} print:hidden`}>
-        <button onClick={() => addNode('container')} className="p-3 hover:bg-blue-50 rounded-xl group relative"><Layers size={24} className="text-slate-600 group-hover:text-blue-600" /></button>
-        <button onClick={() => addNode('block')} className="p-3 hover:bg-blue-50 rounded-xl group relative"><Box size={24} className="text-slate-600 group-hover:text-blue-600" /></button>
-        <button onClick={() => addNode('text')} className="p-3 hover:bg-blue-50 rounded-xl group relative"><Type size={24} className="text-slate-600 group-hover:text-blue-600" /></button>
+      <div className={`absolute left-4 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-2 bg-white/90 backdrop-blur-md border border-slate-200 p-2 rounded-2xl shadow-xl transition-all ${isPresentation ? '-translate-x-32' : 'translate-x-0'} print:hidden`}>
+        <button onClick={() => setShowNewFileModal(true)} className="p-3 hover:bg-amber-50 rounded-xl group relative mb-2" title="New File"><FilePlus size={24} className="text-slate-600 group-hover:text-amber-600" /></button>
+        <div className="h-px w-full bg-slate-200 my-1"></div>
+        <button onClick={() => addNode('container')} className="p-3 hover:bg-blue-50 rounded-xl group relative" title="Add Container"><Layers size={24} className="text-slate-600 group-hover:text-blue-600" /></button>
+        <button onClick={() => addNode('block')} className="p-3 hover:bg-blue-50 rounded-xl group relative" title="Add Component"><Box size={24} className="text-slate-600 group-hover:text-blue-600" /></button>
+        <button onClick={() => addNode('text')} className="p-3 hover:bg-blue-50 rounded-xl group relative" title="Add Text"><Type size={24} className="text-slate-600 group-hover:text-blue-600" /></button>
         <div className="h-px w-full bg-slate-200 my-1"></div>
         <button onClick={handleRecursiveLayout} className="p-3 hover:bg-slate-100 rounded-xl group relative" title="Clean Up (Auto-Layout)">
           <Grid size={20} className="text-slate-600 group-hover:text-slate-900" />
@@ -1156,21 +1498,21 @@ export default function FlowArchitect() {
       </div>
 
       {/* RIGHT SIDEBAR: LAYER PANEL */}
-      {showLayerPanel && (
-        <div className="absolute right-4 top-20 bottom-20 w-64 bg-white/95 backdrop-blur shadow-xl border border-slate-200 rounded-xl flex flex-col z-40 animate-in slide-in-from-right-4 duration-300 print:hidden">
+      {showLayerPanel && !isPresentation && (
+        <div className={`absolute right-4 top-20 bottom-20 w-64 bg-white/95 backdrop-blur shadow-xl border border-slate-200 rounded-xl flex flex-col animate-in slide-in-from-right-4 duration-300 print:hidden ${activePanel === 'layers' ? 'z-[60]' : 'z-[50]'}`}>
            <div className="p-3 border-b border-slate-100 flex justify-between items-center">
               <span className="font-semibold text-slate-700 text-sm">Components</span>
               <button onClick={() => setShowLayerPanel(false)}><X size={14} className="text-slate-400 hover:text-slate-600"/></button>
            </div>
            <div className="flex-1 overflow-y-auto p-2">
               {nodes.filter(n => !n.parentId).map(node => (
-                 <TreeItem 
+                  <TreeItem 
                     key={node.id} 
                     node={node} 
                     allNodes={nodes} 
                     onSelect={selectAndCenterNode} 
                     selectedId={selectedId} 
-                 />
+                  />
               ))}
               {nodes.length === 0 && <div className="text-center text-xs text-slate-400 mt-4">Canvas is empty</div>}
            </div>
@@ -1178,8 +1520,8 @@ export default function FlowArchitect() {
       )}
 
       {/* PROPERTY PANEL */}
-      {selectedId && mode !== 'presentation' && !showLayerPanel && (
-        <div className="absolute right-4 top-20 w-72 bg-white/95 backdrop-blur shadow-2xl border border-slate-200 rounded-xl p-4 z-50 print:hidden">
+      {selectedId && !isPresentation && (
+        <div className={`absolute right-4 top-20 w-72 bg-white/95 backdrop-blur shadow-2xl border border-slate-200 rounded-xl p-4 print:hidden ${activePanel === 'properties' ? 'z-[60]' : 'z-[50]'}`}>
            <div className="flex justify-between items-center mb-4 pb-2 border-b border-slate-100">
              <span className="font-semibold text-slate-700 text-sm">
                {selectionType === 'node' ? 'Edit Component' : 'Edit Connection'}
@@ -1199,6 +1541,7 @@ export default function FlowArchitect() {
                         value={selectedNode.label}
                         onChange={(e) => updateNodeProperty(selectedId, { label: e.target.value })}
                         onKeyDown={(e) => e.stopPropagation()} 
+                        onBlur={() => recordHistory(nodes, edges)}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
                     />
                  ) : (
@@ -1207,6 +1550,7 @@ export default function FlowArchitect() {
                         value={selectedNode.label}
                         onChange={(e) => updateNodeProperty(selectedId, { label: e.target.value })}
                         onKeyDown={(e) => e.stopPropagation()} 
+                        onBlur={() => recordHistory(nodes, edges)}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
                     />
                  )}
@@ -1214,16 +1558,16 @@ export default function FlowArchitect() {
                
                {selectedNode.type === 'container' && (
                   <div className="flex items-center justify-between py-2 border-y border-slate-100">
-                     <span className="text-xs font-medium text-slate-600 flex items-center gap-2">
+                      <span className="text-xs font-medium text-slate-600 flex items-center gap-2">
                         {selectedNode.locked ? <Lock size={12}/> : <Unlock size={12}/>}
                         Lock Layout
-                     </span>
-                     <button 
-                        onClick={() => updateNodeProperty(selectedId, { locked: !selectedNode.locked })}
+                      </span>
+                      <button 
+                        onClick={() => { updateNodeProperty(selectedId, { locked: !selectedNode.locked }); recordHistory(nodes, edges); }}
                         className={`w-10 h-5 rounded-full relative transition-colors ${selectedNode.locked ? 'bg-blue-500' : 'bg-slate-200'}`}
-                     >
-                        <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${selectedNode.locked ? 'translate-x-5' : 'translate-x-0'}`} />
-                     </button>
+                      >
+                         <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${selectedNode.locked ? 'translate-x-5' : 'translate-x-0'}`} />
+                      </button>
                   </div>
                )}
 
@@ -1235,6 +1579,7 @@ export default function FlowArchitect() {
                     value={selectedNode.description || ''}
                     onChange={(e) => updateNodeProperty(selectedId, { description: e.target.value })}
                     onKeyDown={(e) => e.stopPropagation()} 
+                    onBlur={() => recordHistory(nodes, edges)}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm resize-none focus:ring-2 focus:ring-blue-500 outline-none"
                     placeholder="Add a description..."
                     />
@@ -1243,12 +1588,12 @@ export default function FlowArchitect() {
 
                <div className="grid grid-cols-2 gap-2">
                   <div>
-                     <label className="block text-xs font-medium text-slate-500 mb-1">Width</label>
-                     <input type="number" value={selectedNode.width} onChange={(e) => updateNodeProperty(selectedId, { width: parseInt(e.target.value) || 0 })} onKeyDown={(e) => e.stopPropagation()} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
+                      <label className="block text-xs font-medium text-slate-500 mb-1">Width</label>
+                      <input type="number" value={selectedNode.width} onChange={(e) => updateNodeProperty(selectedId, { width: parseInt(e.target.value) || 0 })} onKeyDown={(e) => e.stopPropagation()} onBlur={() => recordHistory(nodes, edges)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
                   </div>
                   <div>
-                     <label className="block text-xs font-medium text-slate-500 mb-1">Height</label>
-                     <input type="number" value={selectedNode.height} onChange={(e) => updateNodeProperty(selectedId, { height: parseInt(e.target.value) || 0 })} onKeyDown={(e) => e.stopPropagation()} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
+                      <label className="block text-xs font-medium text-slate-500 mb-1">Height</label>
+                      <input type="number" value={selectedNode.height} onChange={(e) => updateNodeProperty(selectedId, { height: parseInt(e.target.value) || 0 })} onKeyDown={(e) => e.stopPropagation()} onBlur={() => recordHistory(nodes, edges)} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
                   </div>
                </div>
              </div>
@@ -1300,7 +1645,7 @@ export default function FlowArchitect() {
       <div 
         ref={containerRef}
         className={`relative w-full h-full overflow-hidden transition-colors duration-300 ${mode === 'pan' || panning ? 'cursor-grabbing' : mode === 'connect' ? 'cursor-crosshair' : 'cursor-default'}`}
-        style={{ backgroundColor: mode === 'presentation' ? '#f8fafc' : '#f1f5f9', touchAction: 'none' }}
+        style={{ backgroundColor: isPresentation ? '#f8fafc' : '#f1f5f9', touchAction: 'none' }}
         onMouseDown={handleCanvasMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -1318,14 +1663,16 @@ export default function FlowArchitect() {
                 onDragStart={handleNodeDragStart}
                 onResizeStart={handleResizeStart}
                 selectedId={selectedId}
-                onSelect={(id) => { setSelectedId(id); setSelectionType('node'); }}
-                isPresentation={mode === 'presentation'}
+                onSelect={(id) => { setSelectedId(id); setSelectionType('node'); setActivePanel('properties'); }}
+                isPresentation={isPresentation}
                 isConnectMode={mode === 'connect'}
                 connectingSourceId={connectingSource}
                 onConnectClick={handleConnectClick}
                 editingId={editingId}
                 setEditingId={setEditingId}
-                onUpdateLabel={(id, newLabel) => setNodes(nodes.map(n => n.id === id ? { ...n, label: newLabel } : n))}
+                onUpdateLabel={updateNodeLabel}
+                disableTooltip={descendantsOfSelected.includes(node.id)}
+                onPanStart={(sx, sy) => setPanning({ startX: sx, startY: sy, viewStartX: view.x, viewStartY: view.y })}
               />
             ))
           }
@@ -1334,7 +1681,9 @@ export default function FlowArchitect() {
             nodes={nodes} 
             edges={edges} 
             selectedEdgeId={selectionType === 'edge' ? selectedId : null}
-            onSelectEdge={(id) => { if (mode !== 'presentation') { setSelectedId(id); setSelectionType('edge'); } }}
+            selectedNodeId={selectionType === 'node' ? selectedId : null}
+            isPresentation={isPresentation}
+            onSelectEdge={(id) => { if (!isPresentation) { setSelectedId(id); setSelectionType('edge'); } }}
           />
 
         </div>
