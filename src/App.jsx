@@ -1,4 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Routes, Route, useParams, useNavigate } from 'react-router-dom';
+import { useAuth } from './AuthContext';
+import { db } from './firebase';
+import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
+import AuthModal from './components/AuthModal';
+import Dashboard from './components/Dashboard';
+
 import { 
   Layout, 
   MousePointer2, 
@@ -34,7 +41,11 @@ import {
   Redo,
   FilePlus,
   Copy,
-  AlertTriangle
+  AlertTriangle,
+  User,
+  Save,
+  LogOut,
+  Settings
 } from 'lucide-react';
 
 /**
@@ -516,8 +527,10 @@ const NodeComponent = ({
   const [tempLabel, setTempLabel] = useState(node.label);
 
   useEffect(() => {
-    setTempLabel(node.label);
-  }, [node.label]);
+    if (!isEditing && tempLabel !== node.label) {
+        setTimeout(() => setTempLabel(node.label), 0);
+    }
+  }, [node.label, isEditing, tempLabel]);
 
   const handleMouseDown = (e) => {
     if (isPresentation) {
@@ -681,9 +694,20 @@ const NodeComponent = ({
 
       {isSelected && !isPresentation && !isConnectMode && (
         <>
+          {/* Resize handles */}
           <div className="absolute bottom-0 right-0 w-4 h-4 bg-transparent cursor-nwse-resize z-30 flex items-end justify-end p-0.5" onMouseDown={(e) => handleResizeMouseDown(e, 'se')}><div className="w-2 h-2 bg-blue-500 rounded-sm"></div></div>
           <div className="absolute bottom-0 left-0 w-4 h-4 bg-transparent cursor-nesw-resize z-30 flex items-end justify-start p-0.5" onMouseDown={(e) => handleResizeMouseDown(e, 'sw')}><div className="w-2 h-2 bg-white border border-blue-500 rounded-sm"></div></div>
           <div className="absolute top-0 right-0 w-4 h-4 bg-transparent cursor-nesw-resize z-30 flex items-start justify-end p-0.5" onMouseDown={(e) => handleResizeMouseDown(e, 'ne')}><div className="w-2 h-2 bg-white border border-blue-500 rounded-sm"></div></div>
+
+          {/* Inline Edit Hint Button (Double click visually represented) */}
+          <button 
+            type="button"
+            className="absolute -top-3 -right-3 w-6 h-6 bg-white border border-blue-200 text-blue-500 rounded-full flex items-center justify-center shadow-md z-40 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+            onClick={(e) => { e.stopPropagation(); setEditingId(node.id); }}
+            title="Edit Component Name"
+          >
+            <Edit3 size={12} />
+          </button>
         </>
       )}
     </div>
@@ -737,6 +761,10 @@ const TreeItem = ({ node, allNodes, onSelect, selectedId, level = 0 }) => {
  * --- MAIN APP ---
  */
 export default function FlowArchitect() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const { currentUser, userData, refreshUserData } = useAuth();
+  
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
 
@@ -750,6 +778,15 @@ export default function FlowArchitect() {
   const [activePanel, setActivePanel] = useState(null); // 'layers' | 'properties'
   const [toastMessage, setToastMessage] = useState(null);
   const [showNewFileModal, setShowNewFileModal] = useState(false);
+  
+  // Auth & Dashboard Modals
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [currentDesignTitle, setCurrentDesignTitle] = useState('Untitled Design');
+  const [hasShownLoginPrompt, setHasShownLoginPrompt] = useState(false);
+  const dashboardOpenedRef = useRef(false);
+  const [isInitialLoading, setIsInitialLoading] = useState(id ? true : false);
 
   const [dragging, setDragging] = useState(null); 
   const [resizing, setResizing] = useState(null);
@@ -793,38 +830,161 @@ export default function FlowArchitect() {
     setOpenGraphTag("og:url", window.location.href); 
   }, []);
 
-  // LOAD FROM STORAGE
+  // Handle Dashboard opening naturally on Home for authenticated users
   useEffect(() => {
-    const saved = localStorage.getItem('flowArchitectData');
-    if (saved) {
-      try {
-        const { nodes: savedNodes, edges: savedEdges, view: savedView } = JSON.parse(saved);
-        const validNodes = savedNodes || [];
-        const validEdges = savedEdges || [];
-        setNodes(validNodes);
-        setEdges(validEdges);
-        if (savedView) setView(savedView);
-        
-        // Init History
-        setHistory([{ nodes: validNodes, edges: validEdges }]);
-        setCurrentStep(0);
-      } catch (e) {
-        console.error("Failed to load data", e);
-        setHistory([{ nodes: [], edges: [] }]);
-        setCurrentStep(0);
-      }
-    } else {
-        setHistory([{ nodes: [], edges: [] }]);
-        setCurrentStep(0);
+    if (currentUser && !id && !isDashboardOpen && !dashboardOpenedRef.current) {
+      dashboardOpenedRef.current = true;
+      setTimeout(() => setIsDashboardOpen(true), 0);
     }
+  }, [currentUser, id, isDashboardOpen]);
+
+  // TOAST HELPER
+  const showToast = useCallback((msg) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
   }, []);
 
-  // SAVE TO STORAGE
-  useEffect(() => {
-    if (nodes.length > 0 || edges.length > 0) {
-        localStorage.setItem('flowArchitectData', JSON.stringify({ nodes, edges, view }));
+  const promptLoginToSave = useCallback(() => {
+    if (!currentUser && !hasShownLoginPrompt) {
+      showToast("Log in to save your work to the cloud!");
+      setHasShownLoginPrompt(true);
     }
-  }, [nodes, edges, view]);
+  }, [currentUser, hasShownLoginPrompt, showToast]);
+
+  const handleExportData = useCallback(() => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ nodes, edges, view, title: currentDesignTitle }));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href",     dataStr);
+    downloadAnchorNode.setAttribute("download", `${currentDesignTitle || 'architecture'}.json`);
+    document.body.appendChild(downloadAnchorNode); 
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  }, [nodes, edges, view, currentDesignTitle]);
+
+  // LOAD FROM STORAGE / FIRESTORE
+  useEffect(() => {
+    const loadDesign = async () => {
+      if (id) {
+        setIsInitialLoading(true);
+        // Load from Firestore
+        try {
+          const docRef = doc(db, 'designs', id);
+          const docSnap = await getDoc(docRef);
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            setNodes(data.nodes || []);
+            setEdges(data.edges || []);
+            if (data.view) setView(data.view);
+            if (data.title) setCurrentDesignTitle(data.title);
+            
+            setHistory([{ nodes: data.nodes || [], edges: data.edges || [] }]);
+            setCurrentStep(0);
+          } else {
+            showToast("Design not found.");
+            navigate('/');
+          }
+        } catch (error) {
+          console.error("Error loading design from cloud:", error);
+          showToast("Error loading design.");
+        }
+        setIsInitialLoading(false);
+      } else {
+        // Load from Local Storage (for anonymous usage)
+        const saved = localStorage.getItem('flowArchitectData');
+        if (saved) {
+          try {
+            const { nodes: savedNodes, edges: savedEdges, view: savedView, title } = JSON.parse(saved);
+            const validNodes = savedNodes || [];
+            const validEdges = savedEdges || [];
+            setNodes(validNodes);
+            setEdges(validEdges);
+            if (savedView) setView(savedView);
+            if (title) setCurrentDesignTitle(title);
+            
+            setHistory([{ nodes: validNodes, edges: validEdges }]);
+            setCurrentStep(0);
+          } catch (e) {
+            console.error("Failed to load data", e);
+            setHistory([{ nodes: [], edges: [] }]);
+            setCurrentStep(0);
+          }
+        } else {
+            setHistory([{ nodes: [], edges: [] }]);
+            setCurrentStep(0);
+        }
+      }
+    };
+    
+    loadDesign();
+  }, [id, navigate, showToast]);
+
+  // SAVE TO LOCAL STORAGE (Only if not exploring a specific Cloud Design to avoid overwriting)
+  useEffect(() => {
+    if (!id && (nodes.length > 0 || edges.length > 0)) {
+        localStorage.setItem('flowArchitectData', JSON.stringify({ nodes, edges, view, title: currentDesignTitle }));
+    }
+  }, [nodes, edges, view, id, currentDesignTitle]);
+
+  const handleCloudSave = async () => {
+    if (!currentUser) {
+      showToast('Please login to save your work to the cloud.');
+      setIsAuthModalOpen(true);
+      return;
+    }
+
+    if (!userData?.isPremium && !id) {
+       // Guarantee perfect tracking by checking actual database size immediately before a new save
+       const q = query(collection(db, 'designs'), where('ownerId', '==', currentUser.uid));
+       const snapshot = await getDocs(q);
+       const actualCount = snapshot.size;
+
+       // Self-heal the designCount if it is out of sync
+       if (actualCount !== userData?.designCount) {
+           const userRef = doc(db, 'users', currentUser.uid);
+           await setDoc(userRef, { designCount: actualCount }, { merge: true });
+           await refreshUserData();
+       }
+
+       if (actualCount >= 3) {
+          showToast('Free tier limit reached (3 max). Please delete an old design or upgrade to Premium.');
+          setIsDashboardOpen(true);
+          return;
+       }
+    }
+
+    setIsSaving(true);
+    try {
+      const designId = id || generateId();
+      const designRef = doc(db, 'designs', designId);
+      
+      await setDoc(designRef, {
+        title: currentDesignTitle,
+        nodes,
+        edges,
+        view,
+        ownerId: currentUser.uid,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+
+      // If it's a new design, ensure user doc is accurately updated and navigate
+      if (!id) {
+        // We know they were <= 2 designs here, so +1 is perfectly safe.
+        const userRef = doc(db, 'users', currentUser.uid);
+        const newlyAddedCount = (userData?.designCount || 0) + 1;
+        await setDoc(userRef, { designCount: newlyAddedCount }, { merge: true });
+        await refreshUserData();
+        showToast('Design saved successfully!');
+        navigate(`/design/${designId}`);
+      } else {
+        showToast('Changes saved!');
+      }
+    } catch (error) {
+      console.error('Error saving design:', error);
+      showToast('Failed to save design.');
+    }
+    setIsSaving(false);
+  };
+
 
   // HISTORY MANAGEMENT
   const recordHistory = useCallback((newNodes, newEdges) => {
@@ -838,7 +998,7 @@ export default function FlowArchitect() {
       setCurrentStep(prev => (prev < 49 ? prev + 1 : 49));
   }, [currentStep]);
 
-  const handleUndo = () => {
+  const handleUndo = useCallback(() => {
       if (currentStep > 0) {
           const newStep = currentStep - 1;
           const state = history[newStep];
@@ -846,9 +1006,9 @@ export default function FlowArchitect() {
           setEdges(state.edges);
           setCurrentStep(newStep);
       }
-  };
+  }, [currentStep, history]);
 
-  const handleRedo = () => {
+  const handleRedo = useCallback(() => {
       if (currentStep < history.length - 1) {
           const newStep = currentStep + 1;
           const state = history[newStep];
@@ -856,31 +1016,35 @@ export default function FlowArchitect() {
           setEdges(state.edges);
           setCurrentStep(newStep);
       }
-  };
-
-  // TOAST HELPER
-  const showToast = (msg) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3000);
-  };
+  }, [currentStep, history]);
 
   const handleShare = async () => {
+    if (!id) {
+        showToast("Please log in and save your design first before sharing!");
+        return;
+    }
+    
+    // The exact window.location.href is already the perfect unique design link
+    // It captures the ID generated at first save (e.g /design/my-title-8xjf92k)
+    let shareUrl = window.location.href;
+
     const shareData = {
-      title: 'FlowArchitect Diagram',
+      title: `${currentDesignTitle} - FlowArchitect Diagram`,
       text: 'Check out this system architecture I designed with FlowArchitect!',
-      url: window.location.href
+      url: shareUrl
     };
 
     if (navigator.share) {
       try {
         await navigator.share(shareData);
-      } catch (err) {
+      } catch {
+        // user cancelled sharing or other error
       }
     } else {
       try {
-        await navigator.clipboard.writeText(window.location.href);
+        await navigator.clipboard.writeText(shareUrl);
         showToast("Link copied to clipboard!");
-      } catch (err) {
+      } catch {
         showToast("Failed to copy link.");
       }
     }
@@ -915,6 +1079,7 @@ export default function FlowArchitect() {
     const newNodes = [...nodes, newNode];
     setNodes(newNodes);
     recordHistory(newNodes, edges);
+    promptLoginToSave();
     
     setSelectedId(newId);
     setSelectionType('node');
@@ -922,7 +1087,7 @@ export default function FlowArchitect() {
     setEditingId(newId);
   };
 
-  const deleteSelection = (specificId) => {
+  const deleteSelection = useCallback((specificId) => {
     const idToDelete = specificId || selectedId;
     if (!idToDelete) return;
 
@@ -946,27 +1111,7 @@ export default function FlowArchitect() {
         setSelectedId(null);
         setSelectionType(null);
     }
-  };
-
-  const handleDuplicate = (nodeId) => {
-      const nodeToCopy = nodes.find(n => n.id === nodeId);
-      if (!nodeToCopy) return;
-
-      const newId = generateId();
-      const newNode = {
-          ...nodeToCopy,
-          id: newId,
-          x: nodeToCopy.x + 20,
-          y: nodeToCopy.y + 20,
-          label: `${nodeToCopy.label} (Copy)`
-      };
-
-      const newNodes = [...nodes, newNode];
-      setNodes(newNodes);
-      recordHistory(newNodes, edges);
-      setSelectedId(newId);
-      setSelectionType('node');
-  };
+  }, [edges, nodes, recordHistory, selectedId, selectionType]);
 
   const selectAndCenterNode = (id) => {
     setSelectedId(id);
@@ -1051,29 +1196,6 @@ export default function FlowArchitect() {
     recordHistory(tempNodes, edges);
   };
 
-  const handleExportData = () => {
-    const data = JSON.stringify({ nodes, edges, view }, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'flow-architect-diagram.json';
-    a.click();
-  };
-
-  const handleNewFile = () => {
-      setNodes([]);
-      setEdges([]);
-      setView({ x: 0, y: 0, scale: 1 });
-      setHistory([{ nodes: [], edges: [] }]);
-      setCurrentStep(0);
-      setSelectedId(null);
-      setSelectionType(null);
-      localStorage.removeItem('flowArchitectData');
-      setShowNewFileModal(false);
-      showToast("Created new diagram");
-  };
-
   const handleImportData = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -1087,16 +1209,12 @@ export default function FlowArchitect() {
             if (data.view) setView(data.view);
             recordHistory(data.nodes, data.edges);
           }
-        } catch (err) {
+        } catch {
           showToast('Invalid file format');
         }
       };
       reader.readAsText(file);
     }
-  };
-
-  const handleExportPDF = () => {
-    window.print();
   };
 
   const handleCanvasMouseDown = (e) => {
@@ -1208,7 +1326,7 @@ export default function FlowArchitect() {
     }
   };
 
-  const handleMouseUp = (e) => {
+  const handleMouseUp = () => {
     setPanning(null);
     setResizing(null);
 
@@ -1291,14 +1409,14 @@ export default function FlowArchitect() {
     }
   };
 
-  const handleWheel = (e) => {
-    if (e.ctrlKey) {
-      e.preventDefault();
+const handleWheel = (evt) => {
+    if (evt.ctrlKey) {
+      evt.preventDefault();
       const zoomSensitivity = 0.001;
-      const newScale = Math.min(Math.max(0.1, view.scale - e.deltaY * zoomSensitivity), 5);
+      const newScale = Math.min(Math.max(0.1, view.scale - evt.deltaY * zoomSensitivity), 5);
       setView(v => ({ ...v, scale: newScale }));
     } else {
-      setView(v => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
+      setView(v => ({ ...v, x: v.x - evt.deltaX, y: v.y - evt.deltaY }));
     }
   };
 
@@ -1313,7 +1431,7 @@ export default function FlowArchitect() {
     }
   };
 
-  const handleTouchMove = (e) => {
+  const handleTouchMove = useCallback((e) => {
     if (e.touches.length === 2 && pinchDist) {
         e.preventDefault();
         const d = Math.hypot(
@@ -1325,10 +1443,30 @@ export default function FlowArchitect() {
         setView(v => ({ ...v, scale: newScale }));
         setPinchDist(d);
     }
-  };
+  }, [pinchDist, view.scale]);
   
   const handleTouchEnd = () => {
     setPinchDist(null);
+  };
+
+  const handleNewFile = () => {
+      setNodes([]);
+      setEdges([]);
+      setView({ x: 0, y: 0, scale: 1 });
+      setHistory([{ nodes: [], edges: [] }]);
+      setCurrentStep(0);
+      setSelectedId(null);
+      setSelectionType(null);
+      setCurrentDesignTitle('Untitled Design');
+      localStorage.removeItem('flowArchitectData');
+      setShowNewFileModal(false);
+      
+      // If we are on a saved URL, go to home
+      if (id) {
+        navigate('/');
+      } else {
+        showToast("Created new diagram");
+      }
   };
 
   const togglePresentation = () => {
@@ -1352,7 +1490,7 @@ export default function FlowArchitect() {
         container.addEventListener('touchstart', handleTouchStart, { passive: false });
         container.addEventListener('touchmove', handleTouchMove, { passive: false });
         container.addEventListener('touchend', handleTouchEnd);
-        container.addEventListener('wheel', (e) => { if(e.ctrlKey) e.preventDefault(); }, { passive: false });
+        container.addEventListener('wheel', (evt) => { if(evt.ctrlKey) evt.preventDefault(); }, { passive: false });
     }
 
     const handleKeyDown = (e) => {
@@ -1375,7 +1513,7 @@ export default function FlowArchitect() {
             container.removeEventListener('wheel', preventDefault);
         }
     };
-  }, [selectedId, selectionType, nodes, edges, editingId, pinchDist, view.scale, history, currentStep]);
+  }, [selectedId, selectionType, nodes, edges, editingId, pinchDist, view.scale, history, currentStep, handleTouchMove, deleteSelection, handleRedo, handleUndo]);
 
   const selectedNode = selectedId && selectionType === 'node' ? nodes.find(n => n.id === selectedId) : null;
   const selectedEdge = selectedId && selectionType === 'edge' ? edges.find(e => e.id === selectedId) : null;
@@ -1395,7 +1533,22 @@ export default function FlowArchitect() {
         .flow-animation-overlay {
             animation: flow 1s linear infinite;
         }
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        .loading-spinner {
+          animation: spin 1s linear infinite;
+        }
       `}</style>
+
+      {/* GLOBAL LOADING OVERLAY */}
+      {isInitialLoading && (
+        <div className="fixed inset-0 bg-slate-50/80 backdrop-blur-sm z-[200] flex flex-col items-center justify-center">
+            <div className="w-12 h-12 border-4 border-slate-200 border-t-blue-600 rounded-full loading-spinner mb-4"></div>
+            <p className="text-slate-600 font-medium animate-pulse">Loading design from cloud...</p>
+        </div>
+      )}
 
       {/* NEW FILE MODAL */}
       {showNewFileModal && (
@@ -1406,14 +1559,14 @@ export default function FlowArchitect() {
                     <h2 className="text-xl font-bold text-slate-900">Start New Diagram?</h2>
                 </div>
                 <p className="text-slate-600 mb-6 leading-relaxed">
-                    This action will clear your current canvas. All unsaved changes will be lost. We recommend downloading your current work before proceeding.
+                    This action will clear your current canvas. All unsaved changes will be lost. We recommend downloading or saving your current work before proceeding.
                 </p>
                 <div className="flex flex-col gap-3">
                     <button 
-                        onClick={handleExportData} 
+                        onClick={handleCloudSave} 
                         className="w-full flex items-center justify-center gap-2 py-3 border-2 border-slate-200 rounded-xl font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
                     >
-                        <Download size={18}/> Download Current Work
+                        <Save size={18}/> Save to Cloud
                     </button>
                     <div className="flex gap-3">
                         <button 
@@ -1436,6 +1589,28 @@ export default function FlowArchitect() {
 
       {/* TOOLBAR */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 bg-white/90 backdrop-blur-md border border-slate-200 p-1.5 rounded-2xl shadow-xl print:hidden">
+        
+        {/* Title Input */}
+        <div className="px-3 py-1 mr-2 border-r border-slate-200 flex-shrink-0">
+          <input
+            type="text"
+            value={currentDesignTitle}
+            onChange={(e) => setCurrentDesignTitle(e.target.value)}
+            onBlur={() => {
+                if (id && currentUser) {
+                    handleCloudSave(); // Auto-save rename if it's already a saved document
+                }
+            }}
+            onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                    e.target.blur(); // Trigger the onBlur save specifically
+                }
+            }}
+            className="w-32 sm:w-48 bg-transparent border-none text-slate-800 font-semibold text-sm focus:ring-0 outline-none placeholder-slate-400"
+            placeholder="Untitled Design"
+          />
+        </div>
+
         <div className={`flex gap-1 transition-opacity ${isPresentation ? 'pointer-events-none opacity-30' : ''}`}>
           <button onClick={() => { setMode('select'); setConnectingSource(null); }} className={`p-2 rounded-lg ${mode === 'select' ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-500'}`} title="Select (V)"><MousePointer2 size={18} /></button>
           <button onClick={() => setMode('pan')} className={`p-2 rounded-lg ${mode === 'pan' ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-500'}`} title="Pan (Space)"><Hand size={18} /></button>
@@ -1459,7 +1634,7 @@ export default function FlowArchitect() {
         <button onClick={handleUndo} className={`p-2 hover:bg-slate-100 rounded-lg text-slate-500 ${currentStep <= 0 ? 'opacity-30 pointer-events-none' : ''} ${isPresentation ? 'pointer-events-none opacity-30' : ''}`} title="Undo (Ctrl+Z)"><Undo size={18} /></button>
         <button onClick={handleRedo} className={`p-2 hover:bg-slate-100 rounded-lg text-slate-500 ${currentStep >= history.length - 1 ? 'opacity-30 pointer-events-none' : ''} ${isPresentation ? 'pointer-events-none opacity-30' : ''}`} title="Redo (Ctrl+Shift+Z)"><Redo size={18} /></button>
         <div className="w-px h-6 bg-slate-200 mx-2"></div>
-        <button onClick={togglePresentation} className={`flex items-center gap-2 px-3 py-2 rounded-lg font-medium text-sm ${isPresentation ? 'bg-green-100 text-green-700' : 'bg-slate-900 text-white'}`}>
+        <button onClick={togglePresentation} className={`flex items-center gap-2 px-3 py-2 rounded-lg font-medium text-sm ${isPresentation ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>
           {isPresentation ? <Edit3 size={14}/> : <Play size={14} fill="currentColor" />}
           {isPresentation ? 'Edit' : 'Present'}
         </button>
@@ -1467,15 +1642,46 @@ export default function FlowArchitect() {
         <div className={`flex gap-1 transition-opacity ${isPresentation ? 'pointer-events-none opacity-30' : ''}`}>
            <button onClick={() => { setShowLayerPanel(!showLayerPanel); if(!showLayerPanel) setActivePanel('layers'); }} className={`p-2 rounded-lg ${showLayerPanel ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-500'}`} title="Layers"><List size={18} /></button>
            
-           {/* EXPORT / IMPORT / SHARE */}
            <div className="w-px h-6 bg-slate-200 mx-2"></div>
+           <button onClick={() => fileInputRef.current?.click()} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Upload (JSON)"><Upload size={18} /></button>
+           <button onClick={handleExportData} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Download (JSON)"><Download size={18} /></button>
            <button onClick={handleShare} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Share"><Share2 size={18} /></button>
-           <button onClick={handleExportData} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Save File (JSON)"><Download size={18} /></button>
-           <button onClick={() => fileInputRef.current?.click()} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Open File (JSON)"><Upload size={18} /></button>
-           <button onClick={handleExportPDF} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500" title="Export PDF"><FileText size={18} /></button>
+           
+           <div className="relative group">
+              <button 
+                onClick={handleCloudSave} 
+                disabled={isSaving}
+                className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 disabled:opacity-50 transition-colors"
+                title="Save to Cloud"
+              >
+                <Save size={18} />
+              </button>
+           </div>
         </div>
         <input ref={fileInputRef} type="file" accept=".json" onChange={handleImportData} className="hidden" />
       </div>
+
+      {/* TOP RIGHT PROFILE ICON */}
+      <div className="absolute top-4 right-4 z-50 flex items-center gap-2 print:hidden">
+        <button 
+            onClick={() => currentUser ? setIsDashboardOpen(true) : setIsAuthModalOpen(true)} 
+            className="p-2 hover:bg-white/80 bg-white/50 backdrop-blur-md flex items-center gap-2 rounded-xl text-slate-700 border border-slate-200 transition-colors shadow-sm"
+        >
+            {currentUser ? (
+            <div className="w-8 h-8 bg-slate-800 text-white rounded-full flex items-center justify-center font-bold text-sm uppercase shadow-inner">
+                {currentUser.email[0]}
+            </div>
+            ) : (
+            <>
+                <User size={18} className="text-slate-700"/>
+                <span className="text-sm font-semibold text-slate-700 pr-1 block">Sign In</span>
+            </>
+            )}
+        </button>
+      </div>
+
+      <AuthModal isOpen={isAuthModalOpen} onClose={() => setIsAuthModalOpen(false)} />
+      {isDashboardOpen && <Dashboard onClose={() => setIsDashboardOpen(false)} onSelectDesign={(id) => { if(!id) handleNewFile(); }} />}
 
       {/* TOAST MESSAGE */}
       {toastMessage && (
