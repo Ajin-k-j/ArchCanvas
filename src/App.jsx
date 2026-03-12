@@ -5,6 +5,7 @@ import { db } from './firebase';
 import { doc, getDoc, setDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
 import AuthModal from './components/AuthModal';
 import Dashboard from './components/Dashboard';
+import SEO from './components/SEO';
 
 import { 
   Layout, 
@@ -1524,6 +1525,18 @@ const handleWheel = (evt) => {
 
   return (
     <div className="flex h-screen w-screen bg-slate-50 overflow-hidden font-sans text-slate-800 select-none">
+      {/* SEO — dynamic per-page meta tags */}
+      <SEO
+        title={id && currentDesignTitle !== 'Untitled Design' ? currentDesignTitle : undefined}
+        description={
+          id
+            ? `View the "${currentDesignTitle}" architecture diagram on ArchCanvas — system design made visual.`
+            : 'Design, share, and collaborate on system architecture diagrams instantly. ArchCanvas is free and developer-friendly.'
+        }
+        url={typeof window !== 'undefined' ? window.location.href : undefined}
+        isDesign={!!id}
+      />
+
       <style>{`
         @keyframes flow {
             to {
